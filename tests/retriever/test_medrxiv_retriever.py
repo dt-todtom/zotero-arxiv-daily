@@ -1,5 +1,7 @@
 """Tests for MedrxivRetriever."""
 
+import json
+
 from omegaconf import open_dict
 
 from zotero_arxiv_daily.retriever.medrxiv_retriever import MedrxivRetriever
@@ -25,3 +27,27 @@ def test_medrxiv_pdf_url(config):
     })
     assert "medrxiv.org" in paper.pdf_url
     assert paper.source == "medrxiv"
+
+
+def test_medrxiv_reuses_biorxiv_fallback_logic(config, monkeypatch):
+    import requests
+    from types import SimpleNamespace
+
+    urls = []
+
+    def _patched(url, **kw):
+        urls.append(url)
+        result = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+        result.json = lambda: (_ for _ in ()).throw(json.JSONDecodeError("Expecting value", "", 0))
+        return result
+
+    monkeypatch.setattr(requests, "get", _patched)
+    monkeypatch.setattr("zotero_arxiv_daily.retriever.biorxiv_retriever.sleep", lambda _: None)
+
+    with open_dict(config.source):
+        config.source.medrxiv = {"category": ["neurology"]}
+    retriever = MedrxivRetriever(config)
+
+    assert retriever._retrieve_raw_papers() == []
+    assert urls
+    assert all("/details/medrxiv/2d" in url for url in urls)

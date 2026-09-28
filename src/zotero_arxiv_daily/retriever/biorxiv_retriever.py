@@ -1,4 +1,5 @@
 from datetime import datetime
+from json import JSONDecodeError
 
 import requests
 from .base import BaseRetriever, register_retriever
@@ -20,21 +21,32 @@ class BiorxivRetriever(BaseRetriever):
         api_url = f"https://api.biorxiv.org/details/{self.server}/2d"
         retry_num = 10
         delay_time = 10
+        collection: list[dict[str, Any]] | None = None
+        messages: Any = []
         for i in range(retry_num):
             try:
                 response = requests.get(api_url)
                 response.raise_for_status()
+                result = response.json()
+                if not isinstance(result, dict):
+                    raise ValueError("API response is not a JSON object.")
+                collection = result.get("collection")
+                if not isinstance(collection, list):
+                    raise ValueError("API response missing 'collection' list.")
+                messages = result.get("messages", [])
                 break
-            except Exception as e:
+            except (requests.RequestException, JSONDecodeError, ValueError) as e:
                 if i == retry_num - 1:
-                    raise e
+                    logger.warning(
+                        f"Failed to retrieve papers from {self.server} after {retry_num} attempts: {e}"
+                    )
+                    return []
                 else:
                     logger.warning(f"Failed to retrieve papers: {str(e)}. Retry in {delay_time} seconds.")
                     sleep(delay_time)
-        result = response.json()
-        collection = result['collection']
+        assert collection is not None
         if len(collection) == 0:
-            logger.warning(f"No paper found. API Message: {result['messages']}")
+            logger.warning(f"No paper found. API Message: {messages}")
             return []
         dated_collection = [
             (datetime.strptime(c['date'], "%Y-%m-%d").date(), c)

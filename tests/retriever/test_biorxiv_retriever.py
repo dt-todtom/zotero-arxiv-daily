@@ -1,5 +1,7 @@
 """Tests for BiorxivRetriever."""
 
+import json
+
 import pytest
 from omegaconf import open_dict
 
@@ -77,6 +79,78 @@ def test_biorxiv_convert_to_paper(config):
     assert paper.source == "biorxiv"
     assert "biorxiv.org" in paper.pdf_url
     assert paper.authors == ["Smith, J.", "Doe, A.", "Lee, K."]
+
+
+def test_biorxiv_retries_non_json_then_succeeds(config, monkeypatch):
+    import requests
+    from types import SimpleNamespace
+
+    calls = {"count": 0}
+
+    def _patched(url, **kw):
+        calls["count"] += 1
+        result = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+        if calls["count"] == 1:
+            result.json = lambda: (_ for _ in ()).throw(json.JSONDecodeError("Expecting value", "", 0))
+        else:
+            result.json = lambda: SAMPLE_BIORXIV_API_RESPONSE
+        return result
+
+    monkeypatch.setattr(requests, "get", _patched)
+    monkeypatch.setattr("zotero_arxiv_daily.retriever.biorxiv_retriever.sleep", lambda _: None)
+
+    with open_dict(config.source):
+        config.source.biorxiv = {"category": ["bioinformatics"]}
+    retriever = BiorxivRetriever(config)
+
+    raw_papers = retriever._retrieve_raw_papers()
+
+    assert calls["count"] == 2
+    assert raw_papers == [SAMPLE_BIORXIV_API_RESPONSE["collection"][0]]
+
+
+def test_biorxiv_returns_empty_on_repeated_non_json_response(config, monkeypatch):
+    import requests
+    from types import SimpleNamespace
+
+    calls = {"count": 0}
+
+    def _patched(url, **kw):
+        calls["count"] += 1
+        result = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+        result.json = lambda: (_ for _ in ()).throw(json.JSONDecodeError("Expecting value", "", 0))
+        return result
+
+    monkeypatch.setattr(requests, "get", _patched)
+    monkeypatch.setattr("zotero_arxiv_daily.retriever.biorxiv_retriever.sleep", lambda _: None)
+
+    with open_dict(config.source):
+        config.source.biorxiv = {"category": ["bioinformatics"]}
+    retriever = BiorxivRetriever(config)
+
+    assert retriever._retrieve_raw_papers() == []
+    assert calls["count"] == 10
+
+
+def test_biorxiv_returns_empty_on_missing_collection(config, monkeypatch):
+    import requests
+    from types import SimpleNamespace
+
+    invalid_response = {"messages": [{"status": "ok"}]}
+
+    def _patched(url, **kw):
+        result = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+        result.json = lambda: invalid_response
+        return result
+
+    monkeypatch.setattr(requests, "get", _patched)
+    monkeypatch.setattr("zotero_arxiv_daily.retriever.biorxiv_retriever.sleep", lambda _: None)
+
+    with open_dict(config.source):
+        config.source.biorxiv = {"category": ["bioinformatics"]}
+    retriever = BiorxivRetriever(config)
+
+    assert retriever._retrieve_raw_papers() == []
 
 
 def test_biorxiv_requires_category(config):
